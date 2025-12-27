@@ -1,8 +1,22 @@
 #include "analyzer.h"
 
+#include <fstream>
+#include <sstream>
+#include <cctype>
+#include <algorithm>
+
 // Students may use ANY data structure internally
 
 void TripAnalyzer::ingestFile(const std::string& csvPath) {
+
+    zoneCounts_.clear();
+    zoneHourCounts_.clear();
+
+    std::ifstream in(csvPath);
+    if (!in.is_open()) 
+
+        return;
+    }
     // TODO:
     // - open file
     // - skip header
@@ -24,3 +38,4 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     // - return first k
     return {};
 }
+
