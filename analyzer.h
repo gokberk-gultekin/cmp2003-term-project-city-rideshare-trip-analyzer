@@ -26,12 +26,4 @@ public:
 
     // Top K slots: count desc, zone asc, hour asc
     std::vector<SlotCount> topBusySlots(int k = 10) const;
-
-private:
-    // Using unordered_map for O(1) average time complexity for insertions and lookups.
-    std::unordered_map<std::string, long long> zoneCounts_;
-
-    // For (zone, hour) pairs, a nested map is a simple and efficient approach.
-    // The outer map keys are zone IDs, and the inner map keys are hours (0-23).
-    std::unordered_map<std::string, std::unordered_map<int, long long>> zoneHourCounts_;
 };
