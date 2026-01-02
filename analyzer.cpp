@@ -112,7 +112,7 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
         bool validTripID = true; 
         if (comma1 == 0) validTripID = false;
         for (size_t i = 0; i < comma1; ++i) {
-            if (!isdigit(row[i])) {
+            if (!isdigit(static_cast<unsigned char>(row[i]))) {
                 validTripID = false;
                 break;
             }
@@ -249,3 +249,4 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     results.resize(topK);
     return results;
 }
+
