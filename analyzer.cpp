@@ -28,7 +28,6 @@ static int extractHour(string_view datetime) {
     }
 
     size_t len = colonPos - (spacePos + 1);
-
     if (len == 0 || len > 2) {
         return -1;
     }
@@ -105,7 +104,9 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
         
         // 1. Find TripID delimiter
         size_t comma1 = row.find(',');
-        if (comma1 == string_view::npos) continue;
+        if (comma1 == string_view::npos) {
+            continue;
+        }
 
         // Dirty Data Check: Validate TripID is numeric
         bool validTripID = true; 
@@ -116,31 +117,46 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
                 break;
             }
         }
-        if (!validTripID) continue;
+        
+        if (!validTripID) {
+            continue;
+        }
 
         // 2. Find PickupZoneID delimiter
         size_t comma2 = row.find(',', comma1 + 1);
-        if (comma2 == string_view::npos) continue;
+        if (comma2 == string_view::npos) {
+            continue;
+        }
 
         // Extract ZoneID as a view
         string_view zoneIdView = row.substr(comma1 + 1, comma2 - comma1 - 1);
-        if (zoneIdView.empty()) continue;
-        
+        if (zoneIdView.empty()) {
+            continue;
+        }
+
         // 3. Skip DropoffZoneID
         size_t comma3 = row.find(',', comma2 + 1);
-        if (comma3 == string_view::npos) continue;
+        if (comma3 == string_view::npos) {
+            continue;
+        }
 
         // 4. Find PickupDateTime delimiter
         size_t comma4 = row.find(',', comma3 + 1);
-        if (comma4 == string_view::npos) continue;
+        if (comma4 == string_view::npos) {
+            continue;
+        }
 
         // Extract DateTime as a view
         string_view timeView = row.substr(comma3 + 1, comma4 - comma3 - 1);
-        if (timeView.empty()) continue;
+        if (timeView.empty()) {
+            continue;
+        }
 
         // Parse Hour
         int hour = extractHour(timeView);
-        if (hour == -1) continue;
+        if (hour == -1) {
+            continue;
+        }
 
         // OPTIMIZATION: Reuse keyBuffer.
         // assign() copies characters into the existing capacity. No malloc called (if within capacity).
