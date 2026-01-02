@@ -2,27 +2,27 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
-#include <cctype>
+#include <string_view>
+#include <vector>
 
 using namespace std;
 
-// Helper function to extract hour [0-23] 
-// without memory allocation 
-static int extractHour(const std::string& datetime) {
+// Helper function to extract hour [0-23]
+// Refactored for compatibility with string_view 
+static int extractHour(string_view datetime) {
     // Find the space separating Date and Time
     size_t spacePos = datetime.find(' ');
-    if (spacePos == std::string::npos) {
+    if (spacePos == string_view::npos) {
         return -1;
     }
 
     // Find the colon separating Hour and Minute
     size_t colonPos = datetime.find(':', spacePos);
-    if (colonPos == std::string::npos) {
+    if (colonPos == string_view::npos) {
         return -1;
     }
 
     // The hour string is between space and colon
-    // Example: "2023-01-01 08:42" -> starts at index spacePos+1, length is colonPos - (spacePos+1)
     if (colonPos <= spacePos + 1) {
         return -1; 
     }
@@ -35,18 +35,19 @@ static int extractHour(const std::string& datetime) {
 
     int h = 0;
 
+    // Fast character math to parse integer
     char c1 = datetime[spacePos + 1];
     if (c1 < '0' || c1 > '9') {
         return -1;
-    }   
-    
+    }
+
     h = c1 - '0';
+    
     if (len == 2) {
         char c2 = datetime[spacePos + 2];
         if (c2 < '0' || c2 > '9') {
             return -1;
         }
-
         h = h * 10 + (c2 - '0');
     }
 
@@ -57,196 +58,178 @@ static int extractHour(const std::string& datetime) {
     return -1;
 }
 
-void TripAnalyzer::ingestFile(const std::string& csvPath) {
-    // TODO:
-    // - open file (OK)
-    // - skip header (OK)
-    // - skip malformed rows (OK)
-    // - extract PickupZoneID and pickup hour (OK)
-    // - aggregate counts (OK)
-    ifstream inFile(csvPath);
+void TripAnalyzer::ingestFile(const string& csvPath) {
+    // Pre-allocate map buckets to prevent rehashing.
+    // Handles the "High Cardinality" test (100k unique zones) efficiently.
+    zoneCountMap.reserve(100000); 
+    slotCountMap.reserve(100000);
 
+    // Increase file buffer to 64KB to reduce system calls during file reading
+    char buffer[65536];
+
+    ifstream inFile(csvPath);
     if (!inFile.is_open()) {
         cerr << "Failed to open file\n";
         return;
     }
 
+    inFile.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
+
     string line;
 
+    // OPTIMIZATION: Reserve memory to avoid costly reallocations.
+    // Avg data length is ~64 chars, so we doubled it (128) as a safety margin.
+    line.reserve(128); 
+
+    // OPTIMIZATION: Create a reusable buffer to prevent heap allocations inside the loop.
+    // We reserve 64 bytes once so we can copy each row's ZoneID here without requesting new memory.
+    string keyBuffer;
+    keyBuffer.reserve(64);
+
     // Skip Header
-    if (!std::getline(inFile, line)) {
-        return; // Empty File
+    if (!getline(inFile, line)) {
+        return; // Empty File check
     }
 
     while (getline(inFile, line)) {
         if (line.empty()) {
             continue;
         }
-        // CSV Schema:
-        // TripID, PickupZoneID, DropoffZoneID, PickupDateTime, DistanceKm, FareAmount
-        // Manual parsing for obtain PickupZoneID and PickupDateTime
-        size_t  comma1 = line.find(',');
-        if (comma1 == string::npos) {
-            continue; // Dirty Data: Missing Column
-        }
 
-        bool validTripID = true; // Directly checks the TripID is numerical
-        if (comma1 == 0) {
-            validTripID = false; // Handle empty TripID (comma at start)
-        }
+        // OPTIMIZATION: Create a "view" of the line (Pointer + Length). Zero allocation.
+        string_view row(line);
 
+        // CSV Schema: TripID, PickupZoneID, DropoffZoneID, PickupDateTime, DistanceKm, FareAmount
+        
+        // Manual CSV parsing for best performance under millions of rows
+        
+        // 1. Find TripID delimiter
+        size_t comma1 = row.find(',');
+        if (comma1 == string_view::npos) continue;
+
+        // Dirty Data Check: Validate TripID is numeric
+        bool validTripID = true; 
+        if (comma1 == 0) validTripID = false;
         for (size_t i = 0; i < comma1; ++i) {
-            if (!isdigit(line[i])) {
+            if (!isdigit(row[i])) {
                 validTripID = false;
                 break;
             }
         }
+        if (!validTripID) continue;
+
+        // 2. Find PickupZoneID delimiter
+        size_t comma2 = row.find(',', comma1 + 1);
+        if (comma2 == string_view::npos) continue;
+
+        // Extract ZoneID as a view
+        string_view zoneIdView = row.substr(comma1 + 1, comma2 - comma1 - 1);
+        if (zoneIdView.empty()) continue;
         
-        if (!validTripID) {
-            continue; // Dirty Data: TripID contains non-numerical chars
-        }
+        // 3. Skip DropoffZoneID
+        size_t comma3 = row.find(',', comma2 + 1);
+        if (comma3 == string_view::npos) continue;
 
-        size_t comma2 = line.find(',', comma1 + 1);
-        if (comma2 == string::npos) {
-            continue; // Dirty Data: Missing Column
-        }
+        // 4. Find PickupDateTime delimiter
+        size_t comma4 = row.find(',', comma3 + 1);
+        if (comma4 == string_view::npos) continue;
 
-        // Obtain PickupZoneID
-        string pickupZoneId = line.substr(comma1 + 1, comma2 - comma1 - 1);
-        if (pickupZoneId.empty()) {
-            continue; // PickupZoneID should not be empty
-        }
-        
-        size_t comma3 = line.find(',', comma2 + 1);
-        if (comma3 == string::npos) {
-            continue;
-        }
+        // Extract DateTime as a view
+        string_view timeView = row.substr(comma3 + 1, comma4 - comma3 - 1);
+        if (timeView.empty()) continue;
 
-        size_t comma4 = line.find(',', comma3 + 1);
-        if (comma4 == string::npos) {
-            continue;
-        }
+        // Parse Hour
+        int hour = extractHour(timeView);
+        if (hour == -1) continue;
 
-        // Obtain PickupDateTime
-        string timeStr = line.substr(comma3 + 1, comma4 - comma3 - 1);
-        if (timeStr.empty()) {
-            continue;
-        }
+        // OPTIMIZATION: Reuse keyBuffer.
+        // assign() copies characters into the existing capacity. No malloc called (if within capacity).
+        keyBuffer.assign(zoneIdView);
 
-        int hour = extractHour(timeStr);
-        if (hour == -1) {
-            continue;
-        }
+        // Aggregate Data
+        // zoneCountMap uses keyBuffer to hash and lookup.
+        zoneCountMap[keyBuffer]++;
 
-        size_t comma5 = line.find(',', comma4 + 1);
-        if (comma5 == string::npos) {
-            continue;
+        // slotCountMap uses keyBuffer to hash and lookup.
+        vector<long long>& hours = slotCountMap[keyBuffer];
+        if (hours.empty()) {
+            hours.resize(24, 0);
         }
-        
-        // Aggregate data using an unordered_map
-        zoneCountMap[pickupZoneId]++;
-
-        vector<long long>& hours = slotCountMap[pickupZoneId];
-       if (hours.empty()) {
-        hours.resize(24, 0);
-       }
-       hours[hour]++;
+        hours[hour]++;
     }
 }
 
 std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
-    // TODO:
-    // - sort by count desc, zone asc (OK)
-    // - return first k (OK)
-
     vector<ZoneCount> results;
-    
-    // Allocates memory to hold every element in zoneCountMap
     results.reserve(zoneCountMap.size());
     
-    
-    
+    // Flatten map to vector
     for (const auto& [zone, count] : zoneCountMap) {
-        // Constructs a ZoneCount object using aggregate initialization
         results.push_back({ zone, count });
     }
 
-    // Handle Edge Cases: k should not be negative
     if (k < 0 || results.empty()) {
         return {};
     }
     
-    size_t topK = std::min(static_cast<size_t>(k), results.size());
+    size_t topK = min(static_cast<size_t>(k), results.size());
 
-    // Uses partial_sort for O(N log K) complexity 
-    // instead of the O(N log N) cost of a full sort.
-    partial_sort(results.begin(), // k should not be fewer than vector size
+    // OPTIMIZATION: partial_sort is O(N log K), significantly faster than O(N log N) full sort.
+    partial_sort(results.begin(), 
                  results.begin() + topK,
                  results.end(),
                  [](const ZoneCount& a, const ZoneCount& b) {
+        // Primary Sort: Count Descending
         if (a.count != b.count) {
-            return a.count > b.count; // Higher count first
+            return a.count > b.count; 
         }
-        return a.zone < b.zone; // Lexicographic order in collisions
+        // Secondary Sort: ZoneID Ascending (Lexicographical) - Deterministic Tie-Breaker
+        return a.zone < b.zone; 
     });
 
-        // Cuts off the end of the vector 
-        // Keeps only the first k elements
-        results.resize(topK);
-
-        return results;
+    results.resize(topK);
+    return results;
 }
 
 std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
-    // TODO:
-    // - sort by count desc, zone asc, hour asc (OK)
-    // - return first k (OK)
-    
-    std::vector<SlotCount> results;
-    
-    // Flatten the nested Map to a Vector
-    // We expect (Zones * 24) potential slots, so reserving helps performance
-    results.reserve(slotCountMap.size() * 24); 
+    vector<SlotCount> results;
+    // Heuristic reserve: assume average zone is active in ~5 distinct hours (e.g. rushes, lunch)
+    results.reserve(slotCountMap.size() * 5); 
 
     for (const auto& [zone, hours] : slotCountMap) {
-        // Iterate hours 0-23
         for (int h = 0; h < 24; ++h) {
-            // Only add slots that actually have trips
             if (static_cast<size_t>(h) < hours.size() && hours[h] > 0) {
                 results.push_back({zone, h, hours[h]});
             }
         }
     }
 
-    // Handle Edge Cases
     if (k <= 0 || results.empty()) {
         return {};
     }
 
-    size_t topK = (std::min)(static_cast<size_t>(k), results.size());
+    size_t topK = (min)(static_cast<size_t>(k), results.size());
 
-    // Partial Sort for efficiency
-    std::partial_sort(results.begin(), 
+    // OPTIMIZATION: partial_sort for Top K
+    partial_sort(results.begin(), 
                       results.begin() + topK, 
                       results.end(), 
                       [](const SlotCount& a, const SlotCount& b) {
         
-        // Trip Count (Desc)
+        // Primary: Count Descending
         if (a.count != b.count) {
             return a.count > b.count; 
         }
         
-        // Zone ID (Asc)
+        // Secondary: ZoneID Ascending
         if (a.zone != b.zone) {
             return a.zone < b.zone; 
         }
 
-        // Hour (Asc)
+        // Tertiary: Hour Ascending
         return a.hour < b.hour; 
     });
 
-    // Truncate to Top K
     results.resize(topK);
-
     return results;
 }
