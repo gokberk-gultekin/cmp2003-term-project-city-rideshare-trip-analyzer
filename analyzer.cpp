@@ -8,54 +8,57 @@
 
 using namespace std;
 
+// Helper: Trim whitespace from string_view
+static string_view trim(string_view s) {
+    size_t start = 0;
+    while (start < s.size() && isspace(static_cast<unsigned char>(s[start]))) {
+        start++;
+    }
+
+    size_t end = s.size();
+    while (end > start && isspace(static_cast<unsigned char>(s[end - 1]))) {
+        end--;
+    }
+
+    return s.substr(start, end - start);
+}
+
 // Helper function to extract hour [0-23]
 // Refactored for compatibility with string_view 
-static int extractHour(string_view datetime) {
-    // Find the space separating Date and Time
-    size_t spacePos = datetime.find(' ');
-    if (spacePos == string_view::npos) {
+static int extractHour(string_view dt) {
+    // 1. Find the colon which separates Hours and Minutes
+    size_t colon = dt.find(':');
+    if (colon == std::string_view::npos || colon == 0) 
         return -1;
+
+    // 2. Look backwards from the colon to find the hour digits
+    size_t end = colon;
+    size_t start = colon - 1;
+
+    // Move start back as long as we see digits (max 2 digits for hour)
+    int digitCount = 0;
+    while (start < dt.size() && std::isdigit(static_cast<unsigned char>(dt[start]))) {
+        digitCount++;
+        // If we drift back too far or hit 0 (start is unsigned, so check wrapping), break
+        if (start == 0 || digitCount >= 2) break; 
+        start--;
     }
-
-    // Find the colon separating Hour and Minute
-    size_t colonPos = datetime.find(':', spacePos);
-    if (colonPos == string_view::npos) {
-        return -1;
-    }
-
-    // The hour string is between space and colon
-    if (colonPos <= spacePos + 1) {
-        return -1; 
-    }
-
-    size_t len = colonPos - (spacePos + 1);
-    if (len == 0 || len > 2) {
-        return -1;
-    }
-
-    int h = 0;
-
-    // Fast character math to parse integer
-    char c1 = datetime[spacePos + 1];
-    if (c1 < '0' || c1 > '9') {
-        return -1;
-    }
-
-    h = c1 - '0';
     
-    if (len == 2) {
-        char c2 = datetime[spacePos + 2];
-        if (c2 < '0' || c2 > '9') {
-            return -1;
-        }
-        h = h * 10 + (c2 - '0');
+    // Adjust start index: if we stopped on a non-digit, move forward one
+    if (!std::isdigit(static_cast<unsigned char>(dt[start]))) {
+        start++;
     }
 
-    if (h >= 0 && h <= 23) {
-        return h;
+    // 3. Validation: Did we find any digits?
+    if (start >= end) return -1;
+
+    // 4. Parse the integer
+    int h = 0;
+    for (size_t i = start; i < end; ++i) {
+        h = h * 10 + (dt[i] - '0');
     }
 
-    return -1;
+    return (h >= 0 && h <= 23) ? h : -1;
 }
 
 void TripAnalyzer::ingestFile(const string& csvPath) {
@@ -111,7 +114,6 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
 
         // Dirty Data Check: Validate TripID is numeric
         bool validTripID = true; 
-        if (comma1 == 0) validTripID = false;
         for (size_t i = 0; i < comma1; ++i) {
             if (!isdigit(static_cast<unsigned char>(row[i]))) {
                 validTripID = false;
@@ -131,6 +133,7 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
 
         // Extract ZoneID as a view
         string_view zoneIdView = row.substr(comma1 + 1, comma2 - comma1 - 1);
+        zoneIdView = trim(zoneIdView);
         if (zoneIdView.empty()) {
             continue;
         }
@@ -141,6 +144,11 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
             continue;
         }
 
+        string_view dropoffZoneView = row.substr(comma2 + 1, comma3 - comma2 - 1);
+        if (trim(dropoffZoneView).empty()) {
+            continue;
+        }
+
         // 4. Find PickupDateTime delimiter
         size_t comma4 = row.find(',', comma3 + 1);
         if (comma4 == string_view::npos) {
@@ -148,7 +156,7 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
         }
 
         // Extract DateTime as a view
-        string_view timeView = row.substr(comma3 + 1, comma4 - comma3 - 1);
+        string_view timeView = trim(row.substr(comma3 + 1, comma4 - comma3 - 1));
         if (timeView.empty()) {
             continue;
         }
@@ -156,6 +164,11 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
         // Parse Hour
         int hour = extractHour(timeView);
         if (hour == -1) {
+            continue;
+        }
+
+        size_t comma5 = row.find(',', comma4 + 1);
+        if (comma5 == string_view::npos) {
             continue;
         }
 
