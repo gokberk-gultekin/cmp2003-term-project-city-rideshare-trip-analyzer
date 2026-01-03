@@ -250,3 +250,4 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     results.resize(topK);
     return results;
 }
+
