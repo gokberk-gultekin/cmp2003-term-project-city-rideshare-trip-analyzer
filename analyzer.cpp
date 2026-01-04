@@ -4,11 +4,12 @@
 #include <algorithm>
 #include <string_view>
 #include <vector>
+#include <charconv>
 #include <cctype>
 
 using namespace std;
 
-// Helper: Trim whitespace from columns
+// Helper: Trim whitespace
 static string_view trim(string_view s) {
     size_t start = 0;
     while (start < s.size() && 
@@ -25,115 +26,64 @@ static string_view trim(string_view s) {
     return s.substr(start, end - start);
 }
 
-// Helper: Strict decimal validation (no signs, no scientific notation)
-static bool isValidDecimal(string_view s) {
-    s = trim(s); // Trim column first
-    if (s.empty()) {
-        return false;
-    }
-    
-    if (s.size() > 1 && 
-        s[0] == '0' && s[1] != '.') {
-            return false;
-        }
-
-    bool seenDot = false;
-    bool seenDigit = false;
-
-    for (size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
-        if (isdigit(static_cast<unsigned char>(c))) {
-            seenDigit = true;
-        } else if (c == '.') {
-            if (seenDot) {
-                return false;      // multiple dots
-            }
-            
-            if (i == 0 || i == s.size() - 1) {
-                return false; // leading/trailing dot
-            }
-            seenDot = true;
-        } else {
-            return false; // invalid character
-        }
-    }
-
-    return seenDigit;
-}
-
-// Helper function to extract hour [0-23]
-// Handle dirty time related datas
+// Helper: Robust Hour Extraction
 static int extractHour(string_view dt) {
     dt = trim(dt);
     if (dt.empty()) {
         return -1;
     }
-
-    // 1. Find the colon which separates Hours and Minutes
+    // Find the colon separating HH:MM
     size_t colon = dt.find(':');
-    if (colon == std::string_view::npos || colon == 0) {
-        return -1;
-    } 
-
-    // 2. Look backwards from the colon to find the hour digits
-    size_t end = colon;
-    size_t start = colon - 1;
-
-    // Move start back as long as we see digits (max 2 digits for hour)
-    int digitCount = 0;
-    while (start < dt.size() && std::isdigit(static_cast<unsigned char>(dt[start]))) {
-        digitCount++;
-        // If we drift back too far or hit 0 (start is unsigned, so check wrapping), break
-        if (start == 0 || digitCount >= 2) {
-            break;
-        }
-        start--;
-    }
-
-    // Adjust start index: if we stopped on a non-digit, move forward one
-    if (!std::isdigit(static_cast<unsigned char>(dt[start]))) {
-        start++;
-    }
-
-    // 3. Validation: Did we find any digits?
-    if (start >= end) {
+    if (colon == string_view::npos || colon == 0) {
         return -1;
     }
 
-    // 4. Parse the integer wirh ASCII
-    int h = 0;
-    for (size_t i = start; i < end; ++i) {
-        h = h * 10 + (dt[i] - '0');
+    // Look at the character immediately before ':'
+    // Case 1: "08:00" -> '8' is at colon-1
+    // Case 2: " 8:00" -> '8' is at colon-1
+    
+    size_t hourEnd = colon;
+    size_t hourStart = colon - 1;
+
+    // Move start back if we have 2 digits (e.g., "12:00")
+    if (hourStart > 0 && 
+            isdigit(static_cast<unsigned char>(dt[hourStart - 1]))) {
+        hourStart--;
     }
 
-    return (h >= 0 && h <= 23) ? h : -1;
+    // Validate: Are characters between hourStart and hourEnd digits?
+    // This handles "12:00" (valid) vs "a:00" (invalid)
+    int hour = 0;
+    auto res = std::from_chars(dt.data() + 
+        hourStart, dt.data() + hourEnd, hour);
+    
+    if (res.ec != std::errc()) {
+        return -1; // Parse failed
+    }
+    
+    if (hour < 0 || hour > 23) {
+        return -1; // Range check
+    }
+
+    return hour;
 }
 
 void TripAnalyzer::ingestFile(const string& csvPath) {
-    // Pre-allocate map buckets to prevent rehashing.
-    // Handles the "High Cardinality" test (100k unique zones) efficiently.
-    zoneCountMap.reserve(100000); 
-    slotCountMap.reserve(100000);
+    // 1. Reserve memory to prevent rehashings
+    zoneCountMap.reserve(150000);
+    slotCountMap.reserve(150000);
 
-    // Increase file buffer to 64KB to reduce system calls during file reading
+    // 2. Large IO Buffer (64KB) for uninterrupted reads as possible
     char buffer[65536];
-
     ifstream inFile(csvPath);
     if (!inFile.is_open()) {
-        cerr << "Failed to open file\n";
         return;
     }
 
     inFile.rdbuf()->pubsetbuf(buffer, sizeof(buffer));
 
     string line;
-
-    // OPTIMIZATION: Reserve memory to avoid costly reallocations.
-    // Avg data length is ~64 chars, so we doubled it (128) as a safety margin.
-    line.reserve(128); 
-
-    // OPTIMIZATION: Create a reusable buffer to prevent heap allocations inside the loop.
-    // We reserve 64 bytes once so we can copy each row's ZoneID here without requesting new memory.
+    line.reserve(128);
     string keyBuffer;
     keyBuffer.reserve(64);
 
@@ -142,117 +92,79 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
             continue;
         }
 
-        // OPTIMIZATION: Create a "view" of the line (Pointer + Length). Zero allocation.
         string_view row(line);
-
-        // CSV Schema: TripID, PickupZoneID, DropoffZoneID, PickupDateTime, DistanceKm, FareAmount
         
-        // Manual CSV parsing for best performance under millions of rows
+        // Manual parsing without allocation
+
+        // 1. TripID
+        size_t c1 = row.find(',');
+        if (c1 == string_view::npos) {
+            continue; // Missing Column
+        }
         
-        // 1. Find TripID delimiter
-        size_t comma1 = row.find(',');
-        if (comma1 == string_view::npos) {
-            continue;
-        }
-
-        string_view tripIdView = row.substr(0, comma1);
-        tripIdView = trim(tripIdView);
-        if (tripIdView.empty()) {
-            continue;
-        }
-
-        // Dirty Data Check: Validate TripID is numeric
-        bool validTripID = true; 
-        for (size_t i = 0; i < tripIdView.size(); ++i) {
-            if (!isdigit(static_cast<unsigned char>(tripIdView[i]))) {
-                validTripID = false;
+        string_view tripId = trim(row.substr(0, c1));
+        
+        // Dirty Data Rule 1: TripID must be numeric
+        bool validId = !tripId.empty();
+        for (char c : tripId) {
+            if (!isdigit(static_cast<unsigned char>(c))) {
+                validId = false; 
                 break;
             }
         }
+        if (!validId) {
+            continue;
+        }
+
+        // 2. PickupZoneID
+        size_t c2 = row.find(',', c1 + 1);
+        if (c2 == string_view::npos) {
+            continue; // Missing Column
+        }
+        string_view zoneId = trim(row.substr(c1 + 1, c2 - c1 - 1));
+        // Dirty Data Rule 2: Empty Zone
+        if (zoneId.empty()) {
+            continue;
+        }
+
+        // 3. DropoffZoneID (Skip content, but check structure)
+        size_t c3 = row.find(',', c2 + 1);
+        if (c3 == string_view::npos) {
+            continue; // Missing Column
+        }
+
+        // 4. PickupDateTime
+        size_t c4 = row.find(',', c3 + 1);
+        if (c4 == string_view::npos) {
+            continue; // Missing Column
+        }
+        string_view timeView = row.substr(c3 + 1, c4 - c3 - 1);
         
-        if (!validTripID) {
-            continue;
-        }
-
-        // 2. Find PickupZoneID delimiter
-        size_t comma2 = row.find(',', comma1 + 1);
-        if (comma2 == string_view::npos) {
-            continue;
-        }
-
-        // Extract ZoneID as a view
-        string_view zoneIdView = row.substr(comma1 + 1, comma2 - comma1 - 1);
-        zoneIdView = trim(zoneIdView);
-        if (zoneIdView.empty()) {
-            continue;
-        }
-
-        // 3. Skip DropoffZoneID
-        size_t comma3 = row.find(',', comma2 + 1);
-        if (comma3 == string_view::npos) {
-            continue;
-        }
-
-        string_view dropoffZoneView = row.substr(comma2 + 1, comma3 - comma2 - 1);
-        if (trim(dropoffZoneView).empty()) {
-            continue;
-        }
-
-        // 4. Find PickupDateTime delimiter
-        size_t comma4 = row.find(',', comma3 + 1);
-        if (comma4 == string_view::npos) {
-            continue;
-        }
-
-        // Extract DateTime as a view
-        string_view timeView = trim(row.substr(comma3 + 1, comma4 - comma3 - 1));
-        if (timeView.empty()) {
-            continue;
-        }
-
-        // Parse Hour
+        // Dirty Data Rule 3: Invalid Timestamp
         int hour = extractHour(timeView);
-        if (hour < 0) {
-            continue;
-        }
-
-        size_t comma5 = row.find(',', comma4 + 1);
-        if (comma5 == string_view::npos) {
-            continue;
-        }
-
-        string_view distView = trim(row.substr(comma4 + 1, comma5 - comma4 - 1));
-        if (distView.empty()) {
+        if (hour == -1) {
             continue; 
         }
 
-        if (!isValidDecimal(distView)) {
-            continue;
+        // 5. DistanceKm (Check structure ONLY)
+        // We assume if c5 found, the row is structurally valid
+        size_t c5 = row.find(',', c4 + 1);
+        if (c5 == string_view::npos) {
+            continue; // Missing Column
         }
 
-        string_view fareView = trim(row.substr(comma5 + 1));
-        if (fareView.empty()) {
-            continue;
-        }
+        // 6. FareAmount
+        // We implicitly checked the structure because we found c5.
 
-        // Reject if there is ANY extra comma (i.e. more than 6 columns)
-        if (fareView.find(',') != string_view::npos) {
-            continue;
-        }
+        // --- Data Aggregation ---
+
+        // Optimization: Assign string_view to buffer to avoid malloc
+        keyBuffer.assign(zoneId); 
         
-        if (!isValidDecimal(fareView)) {
-            continue;
-        }
-        
-        // OPTIMIZATION: Reuse keyBuffer.
-        // assign() copies characters into the existing capacity. No malloc called (if within capacity).
-        keyBuffer.assign(zoneIdView);
-
-        // Aggregate Data
-        // zoneCountMap uses keyBuffer to hash and lookup.
         zoneCountMap[keyBuffer]++;
-
-        // slotCountMap uses keyBuffer to hash and lookup.
+        
+        // Map operator[] creates the vector if it doesn't exist.
+        // For performance on dense maps, try find() then insert, but [] is cleaner.
         vector<long long>& hours = slotCountMap[keyBuffer];
         if (hours.empty()) {
             hours.resize(24, 0);
@@ -296,7 +208,7 @@ std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
 std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     vector<SlotCount> results;
     // Heuristic reserve: assume average zone is active in ~5 distinct hours (e.g. rushes, lunch)
-    results.reserve(slotCountMap.size() * 5); 
+    results.reserve(slotCountMap.size() * 24); 
 
     for (const auto& [zone, hours] : slotCountMap) {
         for (int h = 0; h < 24; ++h) {
