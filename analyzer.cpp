@@ -8,28 +8,72 @@
 
 using namespace std;
 
-// Helper: Trim whitespace from string_view
+// Helper: Trim whitespace from columns
 static string_view trim(string_view s) {
     size_t start = 0;
-    while (start < s.size() && isspace(static_cast<unsigned char>(s[start]))) {
+    while (start < s.size() && 
+        isspace(static_cast<unsigned char>(s[start]))) {
         start++;
     }
 
     size_t end = s.size();
-    while (end > start && isspace(static_cast<unsigned char>(s[end - 1]))) {
+    while (end > start && 
+        isspace(static_cast<unsigned char>(s[end - 1]))) {
         end--;
     }
 
     return s.substr(start, end - start);
 }
 
+// Helper: Strict decimal validation (no signs, no scientific notation)
+static bool isValidDecimal(string_view s) {
+    s = trim(s); // Trim column first
+    if (s.empty()) {
+        return false;
+    }
+    
+    if (s.size() > 1 && 
+        s[0] == '0' && s[1] != '.') {
+            return false;
+        }
+
+    bool seenDot = false;
+    bool seenDigit = false;
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (isdigit(static_cast<unsigned char>(c))) {
+            seenDigit = true;
+        } else if (c == '.') {
+            if (seenDot) {
+                return false;      // multiple dots
+            }
+            
+            if (i == 0 || i == s.size() - 1) {
+                return false; // leading/trailing dot
+            }
+            seenDot = true;
+        } else {
+            return false; // invalid character
+        }
+    }
+
+    return seenDigit;
+}
+
 // Helper function to extract hour [0-23]
-// Refactored for compatibility with string_view 
+// Handle dirty time related datas
 static int extractHour(string_view dt) {
+    dt = trim(dt);
+    if (dt.empty()) {
+        return -1;
+    }
+
     // 1. Find the colon which separates Hours and Minutes
     size_t colon = dt.find(':');
-    if (colon == std::string_view::npos || colon == 0) 
+    if (colon == std::string_view::npos || colon == 0) {
         return -1;
+    } 
 
     // 2. Look backwards from the colon to find the hour digits
     size_t end = colon;
@@ -40,19 +84,23 @@ static int extractHour(string_view dt) {
     while (start < dt.size() && std::isdigit(static_cast<unsigned char>(dt[start]))) {
         digitCount++;
         // If we drift back too far or hit 0 (start is unsigned, so check wrapping), break
-        if (start == 0 || digitCount >= 2) break; 
+        if (start == 0 || digitCount >= 2) {
+            break;
+        }
         start--;
     }
-    
+
     // Adjust start index: if we stopped on a non-digit, move forward one
     if (!std::isdigit(static_cast<unsigned char>(dt[start]))) {
         start++;
     }
 
     // 3. Validation: Did we find any digits?
-    if (start >= end) return -1;
+    if (start >= end) {
+        return -1;
+    }
 
-    // 4. Parse the integer
+    // 4. Parse the integer wirh ASCII
     int h = 0;
     for (size_t i = start; i < end; ++i) {
         h = h * 10 + (dt[i] - '0');
@@ -89,11 +137,6 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
     string keyBuffer;
     keyBuffer.reserve(64);
 
-    // Skip Header
-    if (!getline(inFile, line)) {
-        return; // Empty File check
-    }
-
     while (getline(inFile, line)) {
         if (line.empty()) {
             continue;
@@ -112,10 +155,16 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
             continue;
         }
 
+        string_view tripIdView = row.substr(0, comma1);
+        tripIdView = trim(tripIdView);
+        if (tripIdView.empty()) {
+            continue;
+        }
+
         // Dirty Data Check: Validate TripID is numeric
         bool validTripID = true; 
-        for (size_t i = 0; i < comma1; ++i) {
-            if (!isdigit(static_cast<unsigned char>(row[i]))) {
+        for (size_t i = 0; i < tripIdView.size(); ++i) {
+            if (!isdigit(static_cast<unsigned char>(tripIdView[i]))) {
                 validTripID = false;
                 break;
             }
@@ -163,7 +212,7 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
 
         // Parse Hour
         int hour = extractHour(timeView);
-        if (hour == -1) {
+        if (hour < 0) {
             continue;
         }
 
@@ -172,6 +221,29 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
             continue;
         }
 
+        string_view distView = trim(row.substr(comma4 + 1, comma5 - comma4 - 1));
+        if (distView.empty()) {
+            continue; 
+        }
+
+        if (!isValidDecimal(distView)) {
+            continue;
+        }
+
+        string_view fareView = trim(row.substr(comma5 + 1));
+        if (fareView.empty()) {
+            continue;
+        }
+
+        // Reject if there is ANY extra comma (i.e. more than 6 columns)
+        if (fareView.find(',') != string_view::npos) {
+            continue;
+        }
+        
+        if (!isValidDecimal(fareView)) {
+            continue;
+        }
+        
         // OPTIMIZATION: Reuse keyBuffer.
         // assign() copies characters into the existing capacity. No malloc called (if within capacity).
         keyBuffer.assign(zoneIdView);
