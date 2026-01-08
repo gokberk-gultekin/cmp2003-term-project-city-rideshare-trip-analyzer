@@ -104,13 +104,13 @@ Do not modify unless explicitly instructed.
 Input files follow this schema:
 
 ```
-TripID,PickupZoneID,PickupTime
+TripID, PickupZoneID, DropoffZoneID, PickupDateTime, DistanceKm, FareAmount
 ```
 
 Example:
 ```
-1,Z1,2024-01-01 10:30
-2,Z2,2024-01-01 11:05
+1000001,ZONE254,ZONE819,2024-01-01 00:00,16.0,74.9
+1000002,ZONE302,ZONE410,2024-01-01 23:59,19.3,81.2
 ```
 
 ### Important Notes
