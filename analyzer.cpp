@@ -32,6 +32,7 @@ static int extractHour(string_view dt) {
     if (dt.empty()) {
         return -1;
     }
+
     // Find the colon separating HH:MM
     size_t colon = dt.find(':');
     if (colon == string_view::npos || colon == 0) {
@@ -56,11 +57,11 @@ static int extractHour(string_view dt) {
     int hour = 0;
     auto res = std::from_chars(dt.data() + 
         hourStart, dt.data() + hourEnd, hour);
-    
+
     if (res.ec != std::errc()) {
         return -1; // Parse failed
     }
-    
+
     if (hour < 0 || hour > 23) {
         return -1; // Range check
     }
@@ -101,18 +102,9 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
         if (c1 == string_view::npos) {
             continue; // Missing Column
         }
-        
         string_view tripId = trim(row.substr(0, c1));
-        
-        // Dirty Data Rule 1: TripID must be numeric
-        bool validId = !tripId.empty();
-        for (char c : tripId) {
-            if (!isdigit(static_cast<unsigned char>(c))) {
-                validId = false; 
-                break;
-            }
-        }
-        if (!validId) {
+        // Dirty Data Rule 1: Empty TripID
+        if (tripId.empty()) {
             continue;
         }
 
@@ -139,7 +131,6 @@ void TripAnalyzer::ingestFile(const string& csvPath) {
             continue; // Missing Column
         }
         string_view timeView = row.substr(c3 + 1, c4 - c3 - 1);
-        
         // Dirty Data Rule 3: Invalid Timestamp
         int hour = extractHour(timeView);
         if (hour == -1) {
@@ -185,9 +176,9 @@ std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
     if (k < 0 || results.empty()) {
         return {};
     }
-    
-    size_t topK = min(static_cast<size_t>(k), results.size());
 
+    size_t topK = min(static_cast<size_t>(k), results.size());
+    
     // OPTIMIZATION: partial_sort is O(N log K), significantly faster than O(N log N) full sort.
     partial_sort(results.begin(), 
                  results.begin() + topK,
@@ -202,6 +193,7 @@ std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
     });
 
     results.resize(topK);
+
     return results;
 }
 
@@ -209,7 +201,7 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     vector<SlotCount> results;
     // Heuristic reserve: assume average zone is active in ~5 distinct hours (e.g. rushes, lunch)
     results.reserve(slotCountMap.size() * 24); 
-
+    
     for (const auto& [zone, hours] : slotCountMap) {
         for (int h = 0; h < 24; ++h) {
             if (static_cast<size_t>(h) < hours.size() && hours[h] > 0) {
@@ -234,7 +226,7 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
         if (a.count != b.count) {
             return a.count > b.count; 
         }
-        
+
         // Secondary: ZoneID Ascending
         if (a.zone != b.zone) {
             return a.zone < b.zone; 
@@ -245,6 +237,6 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     });
 
     results.resize(topK);
+
     return results;
 }
-
