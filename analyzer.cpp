@@ -27,7 +27,7 @@ static string_view trim(string_view s)
     return s.substr(start, end - start);
 }
 
-// Extracts Hour as "HH:MM" or "H:MM" from given string
+// Extracts Hour
 static int extractHour(string_view str)
 {
     str = trim(str);
@@ -231,4 +231,5 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const
     results.resize(topK);
 
     return results;
+
 }
